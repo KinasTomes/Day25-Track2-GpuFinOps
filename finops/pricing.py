@@ -60,21 +60,65 @@ def break_even_utilization(discount_frac: float) -> float:
     return max(0.0, min(1.0, 1.0 - discount_frac))
 
 
-def recommend_tier(hours_per_day: float, interruptible: bool, reserved_discount: float = 0.45) -> str:
-    """Pick a purchasing tier from a workload's duty cycle + interruptibility.
+# Per-GPU interruption probability (higher = more likely preempted on spot).
+GPU_INTERRUPTION_RATES = {
+    "H100": 0.03, "H200": 0.02, "A100": 0.05,
+    "A10G": 0.10, "L4": 0.12, "B200": 0.02, "MI300X": 0.04,
+}
 
-    DOCUMENTED simple policy (instructor extension point — swap in your own):
-      - interruptible & not 24/7  -> 'spot'      (checkpoint and ride the discount)
-      - duty cycle >= break-even  -> 'reserved'  (steady, high utilization)
-      - otherwise                 -> 'on_demand' (spiky / low duty)
+
+def recommend_tier(
+    hours_per_day: float,
+    interruptible: bool,
+    reserved_discount: float = 0.45,
+    gpu_type: str | None = None,
+    job_days: int | None = None,
+) -> str:
+    """Pick a purchasing tier from duty cycle + interruptibility + GPU type + duration.
+
+    EXTENSION 1 — improved over the DOCUMENTED simple policy:
+      - interruption rate by GPU type affects spot viability
+      - 1yr vs 3yr reserved comparison based on job duration
+    Falls back to the original behaviour when gpu_type/job_days are None.
     """
     duty = max(0.0, hours_per_day) / 24.0
     be = break_even_utilization(reserved_discount)
+
     if interruptible and hours_per_day < 24:
+        if gpu_type:
+            int_rate = GPU_INTERRUPTION_RATES.get(gpu_type, 0.05)
+            if int_rate > 0.08:
+                if duty >= be:
+                    return "reserved_1yr" if (job_days and job_days < 365) else "reserved_3yr"
+                return "on_demand"
         return "spot"
+
     if duty >= be:
+        if job_days is not None:
+            if duty >= 0.75 and job_days >= 30:
+                return "reserved_3yr"
+            return "reserved_1yr" if job_days < 365 else "reserved_3yr"
         return "reserved"
+
     return "on_demand"
+
+
+def cache_is_worth_it(
+    avg_cache_reads: float,
+    write_cost_per_m: float,
+    read_discount: float = 0.10,
+) -> bool:
+    """Cache only saves money when total savings from reads exceed write cost.
+
+    Each read saves (1 - read_discount) of the input cost.
+    Break-even: avg_cache_reads * (1 - read_discount) > write_cost_per_m / price_in_per_m.
+    Using write_cost_per_m as a fraction of the input price (normalised to 1.0).
+    """
+    if avg_cache_reads <= 0 or write_cost_per_m <= 0:
+        return False
+    savings_per_read = 1.0 - read_discount
+    total_savings = avg_cache_reads * savings_per_read
+    return total_savings > 1.0  # total saving > 1x write cost
 
 
 def spot_checkpoint_cost(

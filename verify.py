@@ -41,7 +41,8 @@ def main() -> int:
 
     tiers = {r["tier"] for r in r3["recommendations"]}
     check("M3 recommends a spot tier", "spot" in tiers, str(tiers))
-    check("M3 recommends a reserved tier", "reserved" in tiers, str(tiers))
+    check("M3 recommends a reserved tier",
+          any(t.startswith("reserved") for t in tiers), str(tiers))
     check("M3 purchasing saves money", r3["savings_pct"] > 0, f"{r3['savings_pct']}%")
 
     check("M4 tag coverage 85-100%", 0.85 <= r4["tag_coverage"] <= 1.0, f"{r4['tag_coverage']:.0%}")
